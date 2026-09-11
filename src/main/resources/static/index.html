@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>轻量时间管理</title>
+    <style>
+        body { font-family: "Microsoft YaHei", sans-serif; max-width: 600px; margin: 20px auto; padding: 20px; background: #f9f9f9; }
+        h2 { text-align: center; }
+        .tabs { display: flex; justify-content: space-around; margin-bottom: 20px; background: #fff; border-radius: 8px; padding: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .tab { cursor: pointer; padding: 8px 16px; border-radius: 6px; color: #666; transition: 0.3s; }
+        .tab.active { background: #4CAF50; color: white; font-weight: bold; }
+        .input-area { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        input { flex: 1; padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 6px; outline: none; min-width: 100px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; border: none; border-radius: 6px; }
+        .btn-add { background: #4CAF50; color: white; }
+        .btn-del { background: #f44336; color: white; padding: 6px 12px; font-size: 14px; }
+        .task { display: flex; justify-content: space-between; align-items: center; padding: 12px; border: 1px solid #eee; border-radius: 6px; margin-bottom: 8px; background: #fff; }
+        .task.done { text-decoration: line-through; color: #aaa; }
+        .empty { text-align: center; color: #999; padding: 40px; }
+
+        /* 番茄钟样式 */
+        .pomo-box { text-align: center; padding: 40px; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .pomo-time { font-size: 64px; font-weight: bold; color: #4CAF50; margin: 20px 0; }
+        .pomo-btn { background: #2196F3; color: white; padding: 12px 24px; font-size: 18px; margin: 0 10px; }
+        .pomo-btn.stop { background: #f44336; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <h2>⏱️ 轻量时间管理</h2>
+
+    <div class="tabs">
+        <div class="tab" :class="{ active: currentTab === 'todo' }" @click="currentTab = 'todo'">📋 待办</div>
+        <div class="tab" :class="{ active: currentTab === 'pomo' }" @click="currentTab = 'pomo'">🍅 番茄钟</div>
+        <div class="tab" :class="{ active: currentTab === 'countdown' }" @click="currentTab = 'countdown'">📅 倒数日</div>
+    </div>
+
+    <!-- 待办事项 -->
+    <div v-show="currentTab === 'todo'">
+        <div class="input-area">
+            <input v-model="newTitle" placeholder="输入任务名称..." @keyup.enter="addTask" />
+            <button class="btn-add" @click="addTask">新增</button>
+        </div>
+        <div v-if="tasks.length === 0" class="empty">暂无任务，请添加</div>
+        <div v-for="task in tasks" :key="task.id" class="task" :class="{ done: task.completed }">
+            <span>{{ task.title }}</span>
+            <button class="btn-del" @click="deleteTask(task.id)">删除</button>
+        </div>
+    </div>
+
+    <!-- 番茄钟 -->
+    <div v-show="currentTab === 'pomo'" class="pomo-box">
+        <div class="pomo-time">{{ formatTime(pomoSeconds) }}</div>
+        <button class="pomo-btn" @click="togglePomo">{{ pomoRunning ? '暂停' : '开始' }}</button>
+        <button class="pomo-btn stop" @click="resetPomo">重置</button>
+    </div>
+
+    <!-- 倒数日 -->
+    <div v-show="currentTab === 'countdown'">
+        <div class="input-area">
+            <input v-model="cdTitle" placeholder="事件名称（如：实验室面试）" />
+            <input v-model="cdDate" type="date" style="flex: 0.8;" />
+            <button class="btn-add" @click="addCountdown">添加</button>
+        </div>
+        <div v-if="countdowns.length === 0" class="empty">暂无倒数日</div>
+        <div v-for="cd in countdowns" :key="cd.id" class="task">
+            <div>
+                <strong>{{ cd.title }}</strong>
+                <div style="color: #666; font-size: 14px; margin-top: 4px;">
+                    目标: {{ cd.targetDate }}
+                    <!-- 这里就是自动计算的天数！ -->
+                    <span v-if="getDaysLeft(cd.targetDate) > 0" style="color: #4CAF50; font-weight: bold; margin-left: 10px;">
+                            还有 {{ getDaysLeft(cd.targetDate) }} 天
+                        </span>
+                    <span v-else-if="getDaysLeft(cd.targetDate) === 0" style="color: #FF9800; font-weight: bold; margin-left: 10px;">
+                            就是今天！🎯
+                        </span>
+                    <span v-else style="color: #999; margin-left: 10px;">
+                            已过去 {{ Math.abs(getDaysLeft(cd.targetDate)) }} 天
+                        </span>
+                </div>
+            </div>
+            <button class="btn-del" @click="deleteCountdown(cd.id)">删除</button>
+        </div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>
+    const { createApp, ref, onMounted } = Vue;
+    const API_TASK = '/tasks';
+    const API_CD = '/countdowns';
+
+    createApp({
+        setup() {
+            // 标签页状态
+            const currentTab = ref('todo');
+
+            // --- 待办数据 ---
+            const tasks = ref([]);
+            const newTitle = ref('');
+
+            async function loadTasks() {
+                const res = await fetch(API_TASK);
+                tasks.value = await res.json();
+            }
+            async function addTask() {
+                if (!newTitle.value.trim()) return;
+                await fetch(API_TASK, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: newTitle.value, description: '', completed: false })
+                });
+                newTitle.value = '';
+                loadTasks();
+            }
+            async function deleteTask(id) {
+                if (!confirm('确定删除吗？')) return;
+                await fetch(`${API_TASK}/${id}`, { method: 'DELETE' });
+                loadTasks();
+            }
+
+            // --- 番茄钟数据 ---
+            const pomoSeconds = ref(25 * 60); // 默认25分钟
+            const pomoRunning = ref(false);
+            let pomoTimer = null;
+
+            function formatTime(s) {
+                const m = Math.floor(s / 60);
+                const sec = s % 60;
+                return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+            }
+            function togglePomo() {
+                if (pomoRunning.value) {
+                    clearInterval(pomoTimer);
+                    pomoRunning.value = false;
+                } else {
+                    pomoRunning.value = true;
+                    pomoTimer = setInterval(() => {
+                        if (pomoSeconds.value > 0) {
+                            pomoSeconds.value--;
+                        } else {
+                            clearInterval(pomoTimer);
+                            pomoRunning.value = false;
+                            alert('时间到！休息一下吧！');
+                        }
+                    }, 1000);
+                }
+            }
+            function resetPomo() {
+                clearInterval(pomoTimer);
+                pomoRunning.value = false;
+                pomoSeconds.value = 25 * 60;
+            }
+
+            // --- 倒数日数据 ---
+            const countdowns = ref([]);
+            const cdTitle = ref('');
+            const cdDate = ref('');
+
+            async function loadCountdowns() {
+                const res = await fetch(API_CD);
+                countdowns.value = await res.json();
+            }
+            async function addCountdown() {
+                if (!cdTitle.value.trim() || !cdDate.value) return;
+                await fetch(API_CD, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: cdTitle.value, targetDate: cdDate.value })
+                });
+                cdTitle.value = '';
+                cdDate.value = '';
+                loadCountdowns();
+            }
+            async function deleteCountdown(id) {
+                if (!confirm('确定删除吗？')) return;
+                await fetch(`${API_CD}/${id}`, { method: 'DELETE' });
+                loadCountdowns();
+            }
+
+            // --- 计算倒数日天数 ---
+            function getDaysLeft(targetDateStr) {
+                if (!targetDateStr) return 0;
+
+                // 获取今天的日期（清零时分秒，只算日期差）
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+
+                // 获取目标日期
+                const target = new Date(targetDateStr);
+                target.setHours(0, 0, 0, 0);
+
+                // 计算相差毫秒数
+                const diffTime = target - today;
+                // 向上取整得到相差天数
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+                return diffDays;
+            }
+
+            // 初始化加载
+            onMounted(() => {
+                loadTasks();
+                loadCountdowns();
+            });
+
+            return {
+                currentTab,
+                tasks, newTitle, addTask, deleteTask,
+                pomoSeconds, pomoRunning, formatTime, togglePomo, resetPomo,
+                countdowns, cdTitle, cdDate, addCountdown, deleteCountdown,
+                getDaysLeft  // 把计算天数的方法暴露给页面
+            };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
